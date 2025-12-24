@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "cache-proxy"
+version = "0.1.0"
+description = ""
+authors = ["mohsen <m16192494>"]
+readme = "README.md"
+[tool.poetry.scripts]
+cache-proxy = "cache_proxy.cli:cli_app"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+typer = "^0.20.1"
+httpx = "^0.28.1"
+fastapi = "^0.127.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
