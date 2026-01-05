@@ -2,12 +2,13 @@ from fastapi import FastAPI,Request,Response
 import httpx
 import redis
 from urllib.parse import urlparse
+import json
 
 app = FastAPI()
 
-# r=redis.Redis(decode_responses=True)
+r=redis.Redis(decode_responses=False)
 
-hop_by_hop_headers=[ #headers that should not be forwarded by proxie according to RFC 2616.
+hop_by_hop_headers=[ #headers that should not be forwarded by proxie.
 
     'Connection',
     'Keep-Alive',
@@ -24,7 +25,8 @@ hop_by_hop_headers=[i.lower() for i in hop_by_hop_headers]
 
 @app.api_route('/{path:path}',methods=['GET','POST','PUT','DELETE'])
 
-async def forward_to_origin(path,request:Request):
+async def proxy(path,request:Request):
+    
         origin=request.app.state.origin
         clean_path = path if path.startswith('/') else f'/{path}'
         url=f"{origin}{clean_path}"
@@ -35,6 +37,25 @@ async def forward_to_origin(path,request:Request):
             and k.lower()!='accept-encoding'
             }
         modified_request_headers['host']=urlparse(origin).netloc
+        host=modified_request_headers['host']
+        CACHE_KEY=f"{request.url}{host}"
+        HEADER_KEY=f"{CACHE_KEY}:header"
+        try:
+            cached_response=r.get(CACHE_KEY)
+            if request.method=="GET" and cached_response is not None:
+                cached_headers=r.get(HEADER_KEY)
+                res_headers=json.loads(cached_headers.decode('utf-8'))
+                res_headers['content-length']=str(len(cached_response))
+                res_headers['X-CACHE']='HIT'
+                print('X-CACHE : HIT')
+                TTL=r.ttl(CACHE_KEY)
+                print(f'TTL:{TTL}')
+                return Response(content=cached_response,headers=res_headers)
+            else:
+                pass
+        except Exception as e:
+            print(e)
+        
         body=await request.body()
         #forward the request to origin server
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -45,7 +66,7 @@ async def forward_to_origin(path,request:Request):
                 params=dict(request.query_params),
                 content=body,
                 timeout=None
-                )
+            )
         def replace_url():
             """
              Replace origin URL with proxy URL in text-based responses
@@ -68,21 +89,23 @@ async def forward_to_origin(path,request:Request):
         if final_content is None:
             final_content=response.content
 
-
         response_headers=dict(response.headers)
         #remove hop-by-hop headers in response before forwarding to client
-        modified_response_headers={
+        End_to_end_headers={
             k:v for k,v in response_headers.items() if k.lower() not in hop_by_hop_headers
             and k.lower() not in ['content-encoding','content-length']
             }
 
-        
-        modified_response_headers["X-CACHE"]="MISS"
-        modified_response_headers["content-length"]=str(len(final_content))
-        
+        End_to_end_headers["X-CACHE"]="MISS"
+        End_to_end_headers["content-length"]=str(len(final_content))
+        json_headers=json.dumps(End_to_end_headers)
+        if response.status_code==200:
+            r.set(CACHE_KEY,final_content,ex=300)    #cache key will remain for 5 mins.
+            r.set(HEADER_KEY,json_headers,ex=300)
+        print(f"X-CACHE:{End_to_end_headers['X-CACHE']}")
 
         return Response(
             content=final_content,
-            headers=modified_response_headers,
-            status_code=response.status_code
+            headers=End_to_end_headers,
+            status_code=response.status_code,
             )
