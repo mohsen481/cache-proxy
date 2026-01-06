@@ -1,7 +1,8 @@
 ![](cache_proxy/images/Untitled-2025-12-18-0826.png)
 
 
-# A simple caching reverse proxy.
+# cache-proxy — Async caching reverse proxy
+
 cache-proxy is a http proxy built with python and fastapi.
 
 - forward client requests to target server.
@@ -14,9 +15,9 @@ cache-proxy is a http proxy built with python and fastapi.
 - command line interface
 ## Limitations
 Note that this is a basic proxy for learning purposes and not fully compatible with RFC rules.so it may have unexpected behavior in some cases.
-## Install
+## Installation
       pip install git+https://github.com/mohsen481/cache-proxy.git
-## use
+## Usage
 ```
 start proxy:
 cache-proxy start --origin https://dummyjson.com 
@@ -28,6 +29,7 @@ help:
 cache-proxy --help
 
 ```
+#### sample output:
 ![](cache_proxy/images/screenshot.png)
 ### Tools:
    -  python
