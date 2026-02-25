@@ -3,6 +3,7 @@ import httpx
 import redis
 import json
 from .headers import RequestHeadersManager,ResponseHeadersManager
+import time
 
 app = FastAPI()
 
@@ -22,17 +23,32 @@ async def proxy(path,request:Request):
         headers_obj=RequestHeadersManager(request)
         modified_request_headers=headers_obj.modify_headers()
         host=modified_request_headers['host']
-        CACHE_KEY=f"{request.url}{host}"
-        HEADER_KEY=f"{CACHE_KEY}:header"
+        BASE_CACHE_KEY=f"{request.url}{host}"
+        FINAL_CACHE_KEY=BASE_CACHE_KEY
         try:
-            cached_response=r.get(CACHE_KEY)
+            meta=r.get(f"{BASE_CACHE_KEY}:meta")
+            if meta is not None:     #check if this request is vary sensitive
+                vary_meta=json.loads(meta.decode('utf-8'))
+                
+                request_vary_values=[
+                f"{field}:{modified_request_headers.get(field,'')}" for field in vary_meta
+                    ]
+                request_vary_values.sort()
+                #update cache key based on request headers values refered in response vary field
+                FINAL_CACHE_KEY=f"{BASE_CACHE_KEY}:{'|'.join(request_vary_values)}"
+            cached_response=r.get(FINAL_CACHE_KEY)
             if request.method=="GET" and cached_response is not None:
-                cached_headers=r.get(HEADER_KEY)
+                cached_headers=r.get(f"{FINAL_CACHE_KEY}:header")
                 res_headers=json.loads(cached_headers.decode('utf-8'))
                 res_headers['content-length']=str(len(cached_response))
                 res_headers['X-CACHE']='HIT'
+                now=int(time.time())
+                stored_at=int(r.get(f"{FINAL_CACHE_KEY}:stored_at")or now)
+                origin_age=int(r.get(f"{FINAL_CACHE_KEY}:origin_age")or 0)
+                current_age=origin_age+(now-stored_at)
+                res_headers['Age']=str(current_age)
                 print('X-CACHE : HIT')
-                TTL=r.ttl(CACHE_KEY)
+                TTL=r.ttl(FINAL_CACHE_KEY)
                 print(f'TTL:{TTL}')
                 return Response(content=cached_response,headers=res_headers)
             else:
@@ -50,6 +66,7 @@ async def proxy(path,request:Request):
             content=body,
             timeout=None
         )
+
         def replace_url():
             """
              Replace origin URL with proxy URL in text-based responses
@@ -72,16 +89,38 @@ async def proxy(path,request:Request):
         if final_content is None:
             final_content=response.content
 
-        res_headers_manager=ResponseHeadersManager(response)
+        res_headers_manager=ResponseHeadersManager(response,headers_obj)
         modified_response_headers=res_headers_manager.modify_headers()
+        cachable=res_headers_manager.is_cachable()
+        
+        vary_fields=res_headers_manager.check_vary()
+        if vary_fields is not None:
+            r.set(f"{BASE_CACHE_KEY}:meta",json.dumps(vary_fields),ex=300)
+            if '*' in vary_fields:
+                cachable=False
+            else:
+                request_vary_values=[
+                    f"{field}:{modified_request_headers.get(field,'')}" for field in vary_fields
+                ]
+
+                request_vary_values.sort()
+                FINAL_CACHE_KEY=f"{BASE_CACHE_KEY}:{'|'.join(request_vary_values)}"
+
+                
+            
 
         modified_response_headers["X-CACHE"]="MISS"
         modified_response_headers["content-length"]=str(len(final_content))
         json_headers=json.dumps(modified_response_headers)
-        cachable=res_headers_manager.is_cachable()
+        origin_content_length=response.headers.get('content-length')
+        if origin_content_length is not None and int(origin_content_length)!=len(final_content):
+            cachable=False
         if response.status_code==200 and cachable:
-            r.set(CACHE_KEY,final_content,ex=300)    #cache key will remain for 5 mins.
-            r.set(HEADER_KEY,json_headers,ex=300)
+            r.set(FINAL_CACHE_KEY,final_content,ex=300)    #cache key will remain for 5 mins.
+            r.set(f"{FINAL_CACHE_KEY}:header",json_headers,ex=300)
+            r.set(f"{FINAL_CACHE_KEY}:stored_at",int(time.time()),ex=300)
+            origin_age=response.headers.get('age',0)
+            r.set(f"{FINAL_CACHE_KEY}:origin_age",origin_age,ex=300)
         print(f"X-CACHE:{modified_response_headers['X-CACHE']}")
 
         return Response(
