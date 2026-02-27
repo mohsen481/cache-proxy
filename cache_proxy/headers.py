@@ -114,9 +114,11 @@ class ResponseHeadersManager:
         try:
             if 'expires' in headers:
                 raw_exp=headers['expires']
-                raw_date=headers['date'] if 'date' in headers else response_time
+                if 'date' in headers:
+                    date=parsedate(headers['date'])
+                else:
+                    date=response_time
                 expires=parsedate(raw_exp)
-                date=parsedate(raw_date)
                 freshness=(expires-date).total_seconds()
                 return max(0,freshness)
             elif 'last-modified' in headers:
