@@ -4,9 +4,9 @@ import redis
 import json
 from .headers import RequestHeadersManager,ResponseHeadersManager
 import time
+import datetime as dt
 
 app = FastAPI()
-
 r=redis.Redis(decode_responses=False)
 client=httpx.AsyncClient(follow_redirects=True)
 @app.on_event("shutdown")
@@ -67,6 +67,14 @@ async def proxy(path,request:Request):
             timeout=None
         )
 
+        res_headers_manager=ResponseHeadersManager(response,headers_obj)
+        response_time=dt.datetime.now(dt.timezone.utc)
+        freshness=res_headers_manager.calculate_freshness(response_time)
+        origin_age=int(response.headers.get('age',0))
+        
+        remaining=freshness-origin_age
+    
+
         def replace_url():
             """
              Replace origin URL with proxy URL in text-based responses
@@ -89,7 +97,7 @@ async def proxy(path,request:Request):
         if final_content is None:
             final_content=response.content
 
-        res_headers_manager=ResponseHeadersManager(response,headers_obj)
+        
         modified_response_headers=res_headers_manager.modify_headers()
         cachable=res_headers_manager.is_cachable()
         
@@ -115,12 +123,14 @@ async def proxy(path,request:Request):
         origin_content_length=response.headers.get('content-length')
         if origin_content_length is not None and int(origin_content_length)!=len(final_content):
             cachable=False
-        if response.status_code==200 and cachable:
-            r.set(FINAL_CACHE_KEY,final_content,ex=300)    #cache key will remain for 5 mins.
-            r.set(f"{FINAL_CACHE_KEY}:header",json_headers,ex=300)
-            r.set(f"{FINAL_CACHE_KEY}:stored_at",int(time.time()),ex=300)
+        if response.status_code==200 and cachable and remaining>0:
+            expire_time=int(remaining)
+    
+            r.set(FINAL_CACHE_KEY,final_content,ex=expire_time)    #cache key will remain for 5 mins.
+            r.set(f"{FINAL_CACHE_KEY}:header",json_headers,ex=expire_time)
+            r.set(f"{FINAL_CACHE_KEY}:stored_at",int(time.time()),ex=expire_time)
             origin_age=response.headers.get('age',0)
-            r.set(f"{FINAL_CACHE_KEY}:origin_age",origin_age,ex=300)
+            r.set(f"{FINAL_CACHE_KEY}:origin_age",origin_age,ex=expire_time)
         print(f"X-CACHE:{modified_response_headers['X-CACHE']}")
 
         return Response(

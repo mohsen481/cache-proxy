@@ -1,4 +1,8 @@
 from urllib.parse import urlparse
+from email.utils import parsedate_to_datetime as parsedate
+import datetime as dt
+import time
+
 
 
 hop_by_hop_headers=[ #headers that should not be forwarded by proxie.
@@ -28,6 +32,7 @@ def parse_cache_control(cc_val :str) -> dict:
         else:
             directives[i]=True
     return directives
+
 
 class RequestHeadersManager:
     def __init__(self,request):
@@ -92,7 +97,40 @@ class ResponseHeadersManager:
             vary_fields=[h.strip().lower() for h in vary_header.split(',')]
             return vary_fields
     
+    def calculate_age(self,origin_age,stored_at):
+        now=int(time.time())
+        elapsed=now-stored_at
+        return elapsed+origin_age
+        
+    def calculate_freshness(self,response_time):
+        headers=self.modify_headers()
+        cc=headers.get('cache-control')
+        if cc:
+            fields=parse_cache_control(cc)
+            if 's-maxage' in fields:
+                return fields['s-maxage']
+            elif 'max-age' in fields:
+                return fields['max-age']
+        try:
+            if 'expires' in headers:
+                raw_exp=headers['expires']
+                raw_date=headers['date'] if 'date' in headers else response_time
+                expires=parsedate(raw_exp)
+                date=parsedate(raw_date)
+                freshness=(expires-date).total_seconds()
+                return max(0,freshness)
+            elif 'last-modified' in headers:
+                last=parsedate(headers['last-modified'])
+                date=parsedate(headers['date']) if 'date' in headers else response_time
+                freshness=((date-last).total_seconds())/10
+                return max(0,freshness)
+        except Exception:
+            pass
 
+        return 0
+    
+
+                    
     def is_cachable(self):
         res_cc=self.headers.get('cache-control','')
         if res_cc:
